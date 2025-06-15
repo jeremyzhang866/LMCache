@@ -28,6 +28,8 @@ import torch
 from lmcache.logging import init_logger
 from lmcache.utils import CacheEngineKey
 from lmcache.v1.config import LMCacheEngineConfig
+from lmcache.custom_utils.timing_utils import log_execution_time
+from lmcache.custom_utils.timing_utils import AsyncTimer, Timer
 from lmcache.v1.memory_management import MemoryObj
 from lmcache.v1.protocol import RemoteMetadata
 from lmcache.v1.storage_backend.connector.base_connector import RemoteConnector
@@ -156,16 +158,19 @@ class MooncakestoreConnector(RemoteConnector):
         self.local_cpu_backend = local_cpu_backend
 
     async def exists(self, key: CacheEngineKey) -> bool:
-        return self.store.is_exist(key.to_string())
+        with Timer(label=key.to_string(), theme="mooncake exist"):
+            return self.store.is_exist(key.to_string())
 
+    @log_execution_time(theme="mooncake get")
     async def get(self, key: CacheEngineKey) -> Optional[MemoryObj]:
         key_str = key.to_string()
 
         try:
-            buffer = await asyncio.wait_for(
-                asyncio.to_thread(self.store.get_buffer, key_str),
-                timeout=self.config.transfer_timeout,
-            )
+            async with AsyncTimer(label="async get from mooncake" + key_str, theme="mooncake get"):
+                buffer = await asyncio.wait_for(
+                    asyncio.to_thread(self.store.get_buffer, key_str),
+                    timeout=self.config.transfer_timeout,
+                )
         except asyncio.TimeoutError:
             logger.warning(
                 f"Timeout when getting key {key_str} from mooncake store."
@@ -198,19 +203,21 @@ class MooncakestoreConnector(RemoteConnector):
 
         if memory_obj.tensor is not None:
             assert metadata.dtype is not None
-            num_elements = reduce(operator.mul, metadata.shape)
-            temp_tensor = torch.frombuffer(
-                buffer,
-                dtype=metadata.dtype,
-                offset=METADATA_BYTES_LEN,
-                count=num_elements,
-            ).reshape(metadata.shape)
+            with Timer(label="torch from buffer", theme="mooncake get"):
+                num_elements = reduce(operator.mul, metadata.shape)
+                temp_tensor = torch.frombuffer(
+                    buffer,
+                    dtype=metadata.dtype,
+                    offset=METADATA_BYTES_LEN,
+                    count=num_elements,
+                ).reshape(metadata.shape)
 
-            memory_obj.tensor.copy_(temp_tensor)
+                memory_obj.tensor.copy_(temp_tensor)
             return memory_obj
         else:
             return None
 
+    @log_execution_time(theme="mooncake put")
     async def put(self, key: CacheEngineKey, memory_obj: MemoryObj):
         # Please use a function like `memory_obj.to_meta()`.
         kv_bytes = memory_obj.byte_array
@@ -225,12 +232,13 @@ class MooncakestoreConnector(RemoteConnector):
         key_str = key.to_string()
 
         try:
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    self.store.put_parts, key_str, metadata_bytes, kv_bytes
-                ),
-                timeout=self.config.transfer_timeout,
-            )
+            async with AsyncTimer(label="async get put in mooncake" + key_str, theme="mooncake store put"):
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.store.put_parts, key_str, metadata_bytes, kv_bytes
+                    ),
+                    timeout=self.config.transfer_timeout,
+                )
         except asyncio.TimeoutError:
             logger.warning(
                 f"Timeout when putting key {key_str} from mooncake store."

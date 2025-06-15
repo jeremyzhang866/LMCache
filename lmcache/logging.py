@@ -20,12 +20,10 @@ import os
 
 def build_format(color):
     reset = "\x1b[0m"
-    underline = "\x1b[3m"
+    # underline = "\x1b[3m"  # 不再需要
     return (
-        f"{color}[%(asctime)s] LMCache %(levelname)s:{reset} %(message)s "
-        f"{underline}(%(filename)s:%(lineno)d:%(name)s){reset}"
+        f"{color}[%(asctime)s] LMCache %(levelname)s:{reset} %(message)s"
     )
-
 
 class CustomFormatter(logging.Formatter):
     grey = "\x1b[1m"

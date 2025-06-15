@@ -36,6 +36,7 @@ from lmcache.integration.vllm.utils import ENGINE_NAME, lmcache_get_config
 from lmcache.integration.vllm.vllm_adapter import init_lmcache_engine
 from lmcache.logging import init_logger
 from lmcache.utils import _lmcache_nvtx_annotate
+from lmcache.custom_utils.timing_utils import log_execution_time
 from lmcache.v1.cache_engine import LayerwiseLMCacheEngine, LMCacheEngine
 from lmcache.v1.compute.blend import LMCBlenderBuilder
 
@@ -767,6 +768,7 @@ class LMCacheConnectorV1Impl:
     ####################
 
     @_lmcache_nvtx_annotate
+    @log_execution_time(theme="get_num_new_matched_tokens")
     def get_num_new_matched_tokens(
         self,
         request: "Request",
@@ -827,6 +829,7 @@ class LMCacheConnectorV1Impl:
         return need_to_allocate
 
     @_lmcache_nvtx_annotate
+    @log_execution_time(theme="update_state_after_alloc")
     def update_state_after_alloc(self, request: "Request", num_external_tokens: int):
         """
         Update KVConnector state after temporary buffer alloc.
