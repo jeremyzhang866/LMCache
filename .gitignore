@@ -119,3 +119,5 @@ cufile.log
 /csrc/*.hip
 /csrc/*_hip.cuh
 /csrc/*_hip.cpp
+default.etcd/member/snap/db
+default.etcd/member/wal/0000000000000000-0000000000000000.wal
