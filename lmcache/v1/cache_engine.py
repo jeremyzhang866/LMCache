@@ -17,6 +17,8 @@ from typing import Dict, Generator, List, Optional, Union
 import asyncio
 import multiprocessing
 import time
+import concurrent.futures
+
 
 # Third Party
 import torch
@@ -325,39 +327,44 @@ class LMCacheEngine:
         monitor_req_id = self.stats_monitor.on_retrieve_request(num_required_tokens)
 
         ret_mask = torch.zeros_like(tokens, dtype=torch.bool, device="cpu")
-        for start, end, key in self.token_database.process_tokens(tokens, mask):
-            assert isinstance(key, CacheEngineKey)
 
-            # Get the memory object from the storage backend
-            memory_obj = self.storage_manager.get(key)
+        # 1. 预先收集所有 (start, end, key)
+        token_infos = list(self.token_database.process_tokens(tokens, mask))
 
-            if memory_obj is None:
-                if self.enable_p2p:
-                    future_memory_obj = asyncio.run_coroutine_threadsafe(
-                        self.distributed_server.issue_get(key),
-                        self.distributed_loop,
-                    )
-                    memory_obj = future_memory_obj.result()
+        # 2. 用线程池并发 get
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_map = {
+                executor.submit(self.storage_manager.get, key): (start, end, key)
+                for start, end, key in token_infos
+            }
+
+            for future in concurrent.futures.as_completed(future_map):
+                start, end, key = future_map[future]
+                memory_obj = future.result()
+
                 if memory_obj is None:
-                    break
+                    if self.enable_p2p:
+                        future_memory_obj = asyncio.run_coroutine_threadsafe(
+                            self.distributed_server.issue_get(key),
+                            self.distributed_loop,
+                        )
+                        memory_obj = future_memory_obj.result()
+                    if memory_obj is None:
+                        break
 
-            ret_mask[start:end] = True
+                ret_mask[start:end] = True
 
-            # NOTE(Jiayi): memory_obj doesn't have to be a pinned
-            # cpu tensor for the sake of performance.
-            # For example, disk->gpu is faster than disk->cpu->gpu.
-            # RDMA is another example.
-            self.gpu_connector.to_gpu(memory_obj, start, end, **kwargs)
-            memory_obj.ref_count_down()
+                self.gpu_connector.to_gpu(memory_obj, start, end, **kwargs)
+                memory_obj.ref_count_down()
 
-            if isinstance(self.storage_manager, StorageManager):
-                self.storage_manager.batched_unpin([key])
+                if isinstance(self.storage_manager, StorageManager):
+                    self.storage_manager.batched_unpin([key])
 
-            # NOTE (ApostaC): This is only for the current implementation:
-            # When the object is retrieved back to vLLM, the storage backend
-            # will immediately remove the object from itself
-            if isinstance(self.storage_manager, DistributedStorageManager):
-                self.storage_manager.remove(key)
+                # NOTE (ApostaC): This is only for the current implementation:
+                # When the object is retrieved back to vLLM, the storage backend
+                # will immediately remove the object from itself
+                if isinstance(self.storage_manager, DistributedStorageManager):
+                    self.storage_manager.remove(key)
 
         retrieved_tokens = torch.sum(ret_mask)
         self.stats_monitor.on_retrieve_finished(monitor_req_id, retrieved_tokens)
