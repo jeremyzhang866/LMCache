@@ -289,7 +289,7 @@ class LMCacheEngine:
 
         self.stats_monitor.on_store_finished(monitor_req_id)
 
-        logger.debug(f"Stored {num_stored_tokens} out of total {len(tokens)} tokens")
+        logger.info(f"Stored {num_stored_tokens} out of total {len(tokens)} tokens")
 
     @_lmcache_nvtx_annotate
     @torch.inference_mode()

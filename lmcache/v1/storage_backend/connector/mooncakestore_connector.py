@@ -230,7 +230,7 @@ class MooncakestoreConnector(RemoteConnector):
         key_str = key.to_string()
 
         try:
-            async with AsyncTimer(label="async get put in mooncake" + key_str, theme="mooncake store put"):
+            async with AsyncTimer(label="async put in mooncake" + key_str, theme="mooncake store put"):
                 await asyncio.wait_for(
                     asyncio.to_thread(
                         self.store.put_parts, key_str, metadata_bytes, kv_bytes
