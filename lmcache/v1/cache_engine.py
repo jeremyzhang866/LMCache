@@ -332,7 +332,7 @@ class LMCacheEngine:
         token_infos = list(self.token_database.process_tokens(tokens, mask))
 
         # 2. 用线程池并发 get
-        with concurrent.futures.ThreadPoolExecutor(2) as executor:
+        with concurrent.futures.ThreadPoolExecutor(self.config.remote_get_concurrency) as executor:
             future_map = {
                 executor.submit(self.storage_manager.get, key): (start, end, key)
                 for start, end, key in token_infos

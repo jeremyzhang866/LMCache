@@ -81,6 +81,8 @@ class LMCacheEngineConfig:
     # NOTE: port number will add `worker_id`
     lmcache_worker_port: Optional[int] = None
 
+    remote_get_concurrency: Optional[int] = 1
+
     # (Optional) Nixl configurations
     # whether to enable Nixl
     enable_nixl: Optional[bool] = False
@@ -516,6 +518,10 @@ class LMCacheEngineConfig:
         )
         config.lmcache_worker_port = to_int(
             parse_env(get_env_name("lmcache_worker_port"), config.lmcache_worker_port)
+        )
+
+        config.remote_get_concurrency = to_int(
+            parse_env(get_env_name("remote_get_concurrency"), config.remote_get_concurrency)
         )
 
         config.enable_nixl = to_bool(
