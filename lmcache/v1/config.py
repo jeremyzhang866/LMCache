@@ -63,6 +63,8 @@ class LMCacheEngineConfig:
     blend_min_tokens: int  # the minimum number of tokens for blending
     blend_special_str: str = " # # "  # the separator for blending
 
+    remote_get_concurrency: int = 1
+
     # P2P related configurations
     enable_p2p: bool = False  # whether to enable peer-to-peer sharing
     lookup_url: Optional[str] = None  # the url of the lookup server
@@ -80,8 +82,6 @@ class LMCacheEngineConfig:
     # lmcache worker url
     # NOTE: port number will add `worker_id`
     lmcache_worker_port: Optional[int] = None
-
-    remote_get_concurrency: Optional[int] = 1
 
     # (Optional) Nixl configurations
     # whether to enable Nixl
@@ -204,6 +204,7 @@ class LMCacheEngineConfig:
         enable_blending: bool = False,
         blend_recompute_ratio: float = 0.15,
         blend_min_tokens: int = 256,
+        remote_get_concurrency: int = 1,
         blend_special_str: str = " # # ",
         max_local_disk_size: float = 0.0,
         enable_p2p: bool = False,
@@ -265,6 +266,7 @@ class LMCacheEngineConfig:
                 enable_blending=enable_blending,
                 blend_recompute_ratio=blend_recompute_ratio,
                 blend_min_tokens=blend_min_tokens,
+                remote_get_concurrency=remote_get_concurrency,
                 blend_special_str=blend_special_str,
                 enable_p2p=enable_p2p,
                 lookup_url=lookup_url,
@@ -316,6 +318,7 @@ class LMCacheEngineConfig:
         )
         controller_url = config.get("controller_url", None)
         lmcache_worker_port = config.get("lmcache_worker_port", None)
+        remote_get_concurrency = config.get("remote_get_concurrency", 1)
 
         enable_nixl = config.get("enable_nixl", False)
         nixl_role = config.get("nixl_role", None)
@@ -490,6 +493,11 @@ class LMCacheEngineConfig:
         blend_special_str = parse_env(
             get_env_name("blend_special_str"), config.blend_special_str
         )
+
+        config.remote_get_concurrency = to_int(
+            parse_env(get_env_name("remote_get_concurrency"), config.remote_get_concurrency)
+        )
+
         assert blend_special_str is not None
         config.blend_special_str = blend_special_str
 
@@ -518,10 +526,6 @@ class LMCacheEngineConfig:
         )
         config.lmcache_worker_port = to_int(
             parse_env(get_env_name("lmcache_worker_port"), config.lmcache_worker_port)
-        )
-
-        config.remote_get_concurrency = to_int(
-            parse_env(get_env_name("remote_get_concurrency"), config.remote_get_concurrency)
         )
 
         config.enable_nixl = to_bool(
@@ -653,6 +657,7 @@ class LMCacheEngineConfig:
             "enable_blending": self.enable_blending,
             "blend_recompute_ratio": self.blend_recompute_ratio,
             "blend_min_tokens": self.blend_min_tokens,
+            "remote_get_concurrency" : self.remote_get_concurrency,
             "enable_p2p": self.enable_p2p,
             "lookup_url": self.lookup_url,
             "distributed_url": self.distributed_url,
