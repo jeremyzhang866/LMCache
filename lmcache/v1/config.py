@@ -382,6 +382,7 @@ class LMCacheEngineConfig:
                 blend_recompute_ratio,
                 blend_min_tokens,
                 blend_special_str,
+                remote_get_concurrency,
                 enable_p2p,
                 lookup_url,
                 distributed_url,
