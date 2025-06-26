@@ -134,6 +134,14 @@ class LMCacheEngine:
                 )
             )
 
+        self.use_layerwise = config.use_layerwise
+        self.num_layers = metadata.kv_shape[0]
+        if self.use_layerwise:
+            if config.enable_blending:
+                self.fmt = MemoryFormat.KV_2TD
+            else:
+                self.fmt = MemoryFormat.KV_T2D
+
         InitializeUsageContext(config.to_original_config(), metadata)
         self.stats_monitor = LMCStatsMonitor.GetOrCreate()
 
@@ -199,8 +207,7 @@ class LMCacheEngine:
             ends.append(end)
             keys.append(key)
             memory_objs.append(memory_obj)
-
-            tot_kv_size = memory_obj.get_size()
+            tot_kv_size += memory_obj.get_size()
 
         self.gpu_connector.batched_from_gpu(memory_objs, starts, ends, **kwargs)
         offload_time += time.perf_counter() - t
@@ -212,7 +219,7 @@ class LMCacheEngine:
         tot_time = offload_time + put_time
 
         if self.lookup_server is not None:
-            self.lookup_server.batched_insert(key)
+            self.lookup_server.batched_insert(keys)
 
         logger.debug(
             "Store %d tokens takes: %.4f ms, throughput: %.4f GB/s; "
@@ -665,6 +672,20 @@ class LayerwiseLMCacheEngine(LMCacheEngine):
         yield ret_mask
 
     @_lmcache_nvtx_annotate
+    def prefetch(
+        self,
+        tokens: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Launch the prefetching process in the storage manager to load the
+        KV to the local CPU memory
+        """
+        for start, end, key in self.token_database.process_tokens(tokens, mask):
+            assert isinstance(key, CacheEngineKey)
+            self.storage_manager.prefetch(key)
+
+    # TODO(Jiayi): Currently, search_range is only used for testing.
+    @_lmcache_nvtx_annotate
     def lookup(
         self,
         tokens: Union[torch.Tensor, List[int]],
@@ -685,22 +706,73 @@ class LayerwiseLMCacheEngine(LMCacheEngine):
 
         :return: An int indicating how many prefix tokens are cached.
         """
-
         end = 0
         old_end = 0
+
+        # secondary lookup on p2p (via lookup_server) if enabled
+        search_p2p = self.enable_p2p and (search_range is None or "p2p" in search_range)
+
         for start, end, key in self.token_database.process_tokens(tokens):
             assert isinstance(key, CacheEngineKey)
 
-            # TODO(Jiayi): Optimize by checking only the existence of the key
-            # of one layer
-            key_all_layers = key.split_layers(self.num_layers)
-            for key_single_layer in key_all_layers:
-                if not self.storage_manager.contains(
-                    key_single_layer, search_range, pin
-                ):
-                    return old_end
-            old_end = end
+            if self.use_layerwise:
+                # TODO(Jiayi): Optimize by checking only the existence of the key
+                # of one layer
+                key_all_layers = key.split_layers(self.num_layers)
+                for key_single_layer in key_all_layers:
+                    if not self.storage_manager.contains(
+                        key_single_layer, search_range, pin
+                    ):
+                        if search_p2p and self.lookup_server.lookup(key_single_layer):
+                            continue
+                        return old_end
+                old_end = end
+            else:
+                if self.storage_manager.contains(key, search_range, pin):
+                    old_end = end
+                    continue
+
+                if search_p2p:
+                    assert self.lookup_server is not None
+                    if self.lookup_server.lookup(key):
+                        old_end = end
+                        continue
+                return old_end
+
+        # all tokens where found, return the maximal end
         return end
+
+    @_lmcache_nvtx_annotate
+    def clear(
+        self,
+        tokens: Optional[Union[torch.Tensor, List[int]]] = None,
+        locations: Optional[List[str]] = None,
+    ) -> int:
+        assert isinstance(self.storage_manager, StorageManager)
+        # Clear all caches if tokens is None
+        if tokens is None or len(tokens) == 0:
+            num_cleared = self.storage_manager.clear(locations)
+            return num_cleared
+
+        num_removed = 0
+        # Only remove the caches for the given tokens
+        for start, end, key in self.token_database.process_tokens(tokens):
+            assert isinstance(key, CacheEngineKey)
+            removed = self.storage_manager.remove(key, locations)
+            num_removed += removed
+        return num_removed
+
+    def close(self) -> None:
+        """Close the cache engine and free all the resources"""
+
+        if self.enable_p2p:
+            self.distributed_server.close()
+
+        if self.lmcache_worker is not None:
+            self.lmcache_worker.close()
+
+        self.storage_manager.close()
+        logger.info("LMCacheEngine closed.")
 
 
 class LMCacheEngineBuilder:
@@ -755,24 +827,14 @@ class LMCacheEngineBuilder:
             token_database = cls._Create_token_database(config, metadata)
             stat_logger = LMCacheStatsLogger(metadata, log_interval=10)
 
-            # HACK(Jiayi): Merge two types of engine into one in the future
-            engine: Union[LayerwiseLMCacheEngine, LMCacheEngine]
-            if config.use_layerwise:
-                engine = LayerwiseLMCacheEngine(
-                    config,
-                    metadata,
-                    memory_allocator,
-                    token_database,
-                    gpu_connector,
-                )
-            else:
-                engine = LMCacheEngine(
-                    config,
-                    metadata,
-                    memory_allocator,
-                    token_database,
-                    gpu_connector,
-                )
+            engine = LMCacheEngine(
+                config,
+                metadata,
+                memory_allocator,
+                token_database,
+                gpu_connector,
+            )
+
             cls._instances[instance_id] = engine
             cls._cfgs[instance_id] = config
             cls._metadatas[instance_id] = metadata
