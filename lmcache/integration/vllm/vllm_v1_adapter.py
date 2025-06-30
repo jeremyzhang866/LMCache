@@ -40,8 +40,6 @@ from lmcache.integration.vllm.utils import (
 from lmcache.integration.vllm.vllm_adapter import init_lmcache_engine
 from lmcache.logging import init_logger
 from lmcache.utils import _lmcache_nvtx_annotate
-from lmcache.custom_utils.timing_utils import log_execution_time, Timer
-from lmcache.v1.cache_engine import LayerwiseLMCacheEngine, LMCacheEngine
 from lmcache.v1.cache_engine import LMCacheEngine
 from lmcache.v1.compute.blend import LMCBlenderBuilder
 
