@@ -31,7 +31,7 @@ import torch
 import vllm.envs as envs
 import zmq
 
-from lmcache.custom_utils.timing_utils import log_execution_time
+from lmcache.custom_utils.timing_utils import log_execution_time, Timer
 # First Party
 from lmcache.integration.vllm.utils import (
     ENGINE_NAME,
