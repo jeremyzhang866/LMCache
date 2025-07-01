@@ -380,89 +380,47 @@ class LMCacheEngine:
 
         ret_mask = torch.zeros_like(tokens, dtype=torch.bool, device="cpu")
 
-        key_mapping: Dict[str, List[CacheEngineKey]] = {}
-        start_mapping: Dict[str, List[int]] = {}
-        end_mapping: Dict[str, List[int]] = {}
+        # 1. 预先收集所有 (start, end, key)
+        token_infos = list(self.token_database.process_tokens(tokens, mask))
 
-        reordered_keys = []
-        reordered_memory_objs = []
-        reordered_starts = []
-        reordered_ends = []
-        for start, end, key in self.token_database.process_tokens(tokens, mask):
-            assert isinstance(key, CacheEngineKey)
+        # 2. 用线程池并发 get
+        with concurrent.futures.ThreadPoolExecutor(self.config.remote_get_concurrency) as executor:
+            future_map = {
+                executor.submit(self.storage_manager.get, key): (start, end, key)
+                for start, end, key in token_infos
+            }
 
-            if key in self.lookup_cache:
-                # TODO(Jiayi): we can reduce the number of `contains` calls
-                # by checking the lookup cache first (should be updated in `lookup`)
-                pass
-            else:
-                # NOTE: key should always be in the lookup cache once
-                # we support it.
-                location = self.storage_manager.contains(key)
-                if location is None:
-                    # TODO(Jiayi): Need to refactor P2P as a storage backend to
-                    # clean up the following code.
+            for future in concurrent.futures.as_completed(future_map):
+                start, end, key = future_map[future]
+                memory_obj = future.result()
+
+                logger.info(f"key={key}, memory_obj_id={id(memory_obj)}")
+
+                if memory_obj is None:
                     if self.enable_p2p:
                         future_memory_obj = asyncio.run_coroutine_threadsafe(
                             self.distributed_server.issue_get(key),
                             self.distributed_loop,
                         )
                         memory_obj = future_memory_obj.result()
-                        reordered_keys.append(key)
-                        reordered_memory_objs.append(memory_obj)
-                        reordered_starts.append(start)
-                        reordered_ends.append(end)
+                    if memory_obj is None:
                         continue
-                    break
 
-                # NOTE: Here we make the assumption that the underlying
-                # storage backend support pin operation, and the memory
-                # object is already pinned in the storage backend.
                 ret_mask[start:end] = True
 
-                if location not in key_mapping:
-                    key_mapping[location] = [key]
-                    start_mapping[location] = [start]
-                    end_mapping[location] = [end]
-                    continue
+                if memory_obj is not None:
+                    try:
+                        self.gpu_connector.to_gpu(memory_obj, start, end, **kwargs)
+                    finally:
+                        memory_obj.ref_count_down()
 
-            assert location is not None
+                if isinstance(self.storage_manager, StorageManager):
+                    self.storage_manager.batched_unpin([key])
 
-            key_mapping[location].append(key)
-            start_mapping[location].append(start)
-            end_mapping[location].append(end)
-
-        # TODO(Jiayi): We can parallelize the retrieval from
-        # different storage backends.
-        for location, keys in key_mapping.items():
-            memory_objs = self.storage_manager.batched_get(
-                keys=keys,
-                storage_backend_name=location,
-            )
-            reordered_memory_objs.extend(memory_objs)
-            reordered_keys.extend(keys)
-            reordered_starts.extend(start_mapping[location])
-            reordered_ends.extend(end_mapping[location])
-
-        # NOTE(Jiayi): memory_obj doesn't have to be a pinned
-        # cpu tensor for the sake of performance.
-        # For example, disk->gpu is faster than disk->cpu->gpu.
-        # RDMA is another example.
-        self.gpu_connector.batched_to_gpu(
-            reordered_memory_objs, reordered_starts, reordered_ends, **kwargs
-        )
-
-        # TODO(Jiayi): Remove the following for loop with batched operations
-        for key, memory_obj in zip(reordered_keys, reordered_memory_objs, strict=False):
-            memory_obj.ref_count_down()
-
-            # NOTE (ApostaC): This is only for the current implementation:
-            # When the object is retrieved back to vLLM, the storage backend
-            # will immediately remove the object from itself
-            if self.remove_after_retrieve:
+                # NOTE (ApostaC): This is only for the current implementation:
+                # When the object is retrieved back to vLLM, the storage backend
+                # will immediately remove the object from itself
                 self.storage_manager.remove(key)
-            else:
-                self.storage_manager.batched_unpin([key])
 
         retrieved_tokens = torch.sum(ret_mask)
         self.stats_monitor.on_retrieve_finished(monitor_req_id, retrieved_tokens)
